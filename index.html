@@ -236,13 +236,6 @@ input[type=range].bt-range { -webkit-appearance: none; appearance: none; width: 
 .bt-plain { margin: 12px 0 0; padding: 12px 14px; border-radius: 12px; background: #fff; border: 1.5px solid rgba(59,42,42,.25); font-size: 15px; }
 
 /* 8 voice */
-.bt-swapword { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; margin: 14px 0 0; font: 400 34px/1 var(--pirata); }
-.bt-swapword button { position: relative; border: 2.5px dashed var(--ink); background: #fff; border-radius: 12px; padding: 10px 16px 8px; font: inherit; cursor: pointer; }
-.bt-swapword button::after { content: ""; position: absolute; left: 8%; right: 8%; top: 52%; border-top: 5px dashed var(--red); transform: scaleX(0) rotate(-6deg); transform-origin: left; transition: transform .45s cubic-bezier(.2,.9,.3,1); }
-.bt-swapword.bt-on button { color: #9A8F80; }
-.bt-swapword.bt-on button::after { transform: scaleX(1) rotate(-6deg); }
-.bt-swapword span { color: var(--crimson); opacity: 0; transform: scale(.4) rotate(-10deg); transition: opacity .3s .35s, transform .5s .35s cubic-bezier(.3,1.8,.5,1); }
-.bt-swapword.bt-on span { opacity: 1; transform: none; }
 .bt-flips { display: grid; gap: 10px; margin: 14px 0 0; }
 @media (min-width: 560px) { .bt-flips { grid-template-columns: 1fr 1fr; } }
 .bt-flip { display: block; width: 100%; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; perspective: 800px; -webkit-tap-highlight-color: transparent; }
@@ -606,9 +599,6 @@ input[type=range].bt-range { -webkit-appearance: none; appearance: none; width: 
     <p class="bt-kicker"></p>
     <h2>It talks <em>like a pirate</em></h2>
     <p>One pirate theme, all the way through, even in the words on the buttons.</p>
-    <h3>We plunder. We never say the other word.</h3>
-    <div class="bt-swapword" id="swapWord"><button type="button" aria-label="Tap to fix this word">steal</button><span>plunder</span></div>
-    <p class="bt-hint"><b>Tap the word</b> to fix it.</p>
     <h3>Plain talk, pirate talk</h3>
     <p>Tap a card to flip it. These are draft lines from the app, still being tuned.</p>
     <div class="bt-flips" id="flips"></div>
@@ -1034,8 +1024,6 @@ loose($('#ship'), { rock: true });
 
 /* ---------- 8 voice ---------- */
 (function () {
-  var sw = $('#swapWord');
-  $('button', sw).addEventListener('click', function () { sw.classList.toggle('bt-on'); });
   var pairs = [['Pick a picture', 'What be we quilting today, Cap’n?'], ['Convert', 'Arrr, Let’s Make Magic'], ['Your pattern', 'Yer Treasure Map'], ['Save it', 'Export Me Treasure']];
   var flips = $('#flips');
   pairs.forEach(function (p) {
