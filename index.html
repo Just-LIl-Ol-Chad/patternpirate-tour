@@ -1055,7 +1055,9 @@ loose($('#ship'), { rock: true });
 <script>/* PatternPirate: Chad crosses the screen.
    The original grey Chad backslides (real moonwalk, feet on the floor) across the full width of the
    bottom of the screen, stops in the middle, raises his hand for 2 seconds, lowers it and carries on
-   off the left edge. Plays once per trigger, no loop. A beat plays while he is on screen.
+   off the left edge. Plays once per trigger, no loop. A sound plays while he is on screen and stops the moment he is
+   gone, or the moment the page is hidden (another app or tab, the phone locks). The sound never loops and nothing
+   starts it again afterwards; a file shorter than the crossing (about 10 to 17 s, see maxSeconds) just goes quiet early.
    Works on any screen width: the path is measured from the window, not baked into a file.
    One file, nothing else to download.
 
@@ -1342,10 +1344,13 @@ loose($('#ship'), { rock: true });
   }
 
   // ---------- sound ----------
-  var audio = null, primed = null;
+  // Rules: the sound never loops; soundStop() kills every element and audio context the crossing made, so nothing
+  // outlives it; nothing is ever left waiting for a later tap (a sound the browser refused now is dropped, not queued);
+  // and never two at once: one crossing at a time, the old sound is dead before a new one can start, and inside a
+  // crossing the Web Audio copy only starts after the element is dropped.
+  var audio = null, primed = null, priming = null;
   // iPhone only lets a sound start inside a real tap or key press, and a swipe does not count. So the first tap
   // anywhere on the page quietly starts and pauses the file; after that it may be started from a swipe too.
-  var priming = false;
   function from() { var s = parseFloat(CFG.soundFrom); return s > 0 ? s : 0; }
   // jump to the soundFrom point; if the file's length is not known yet, jump again as soon as it is
   function seekStart(el) {
@@ -1353,49 +1358,74 @@ loose($('#ship'), { rock: true });
     try { el.currentTime = s; } catch (e) {}
     if (s && el.readyState < 1) el.addEventListener('loadedmetadata', function () { if (Math.abs(el.currentTime - s) > 0.5) try { el.currentTime = s; } catch (e) {} }, { once: true });
   }
+  function release(el) {                                          // silence an element for good: paused and unloaded, so not even the lock screen can resume it
+    try { el.pause(); } catch (e) {}
+    try { el.removeAttribute('src'); el.load(); } catch (e) {}
+  }
   function prime() {
-    if (primed || priming || !CFG.sound || CFG.sound === 'beat') return;
+    if (primed || priming || document.hidden || !CFG.sound || CFG.sound === 'beat') return;
     try {
-      var el = new Audio(CFG.sound); el.preload = 'auto'; el.loop = true;
+      var el = new Audio(CFG.sound); el.preload = 'auto'; el.loop = false;
       el.muted = true;                                            // silent: the gesture only grants permission, nothing is heard
       var p = el.play();
       if (p && p.then) {
-        priming = true;
-        p.then(function(){ el.pause(); el.muted = false; seekStart(el); primed = el; priming = false; },
-               function(){ priming = false; });                   // refused (a scroll, not a tap): try again on the next gesture
+        priming = el;
+        p.then(function(){ el.pause(); el.muted = false; seekStart(el); if (priming === el) { primed = el; priming = null; } else release(el); },
+               function(){ if (priming === el) priming = null; });   // refused (a scroll, not a tap): try again on the next gesture
       } else { el.pause(); el.muted = false; primed = el; }
-    } catch (e) { priming = false; }
+    } catch (e) { priming = null; }
   }
   ['pointerdown', 'pointerup', 'touchend', 'keydown', 'click'].forEach(function (ev) { document.addEventListener(ev, prime, { passive: true, capture: true }); });
   function soundStart() {
     if (!CFG.sound) return;
+    if (audio) soundStop(true);                                      // never two at once (cannot happen: run() is one at a time, but cheap)
     if (typeof CFG.sound === 'string' && CFG.sound !== 'beat') {   // a file
       var AC0 = window.AudioContext || window.webkitAudioContext;
       var ctx = null, a = null, src = null, stopped = false;
+      function onPause() {                                           // paused by the system (a call, another app, the lock screen), not by us: the show is over
+        if (!stopped && a && !a.ended && !(a.duration && a.currentTime >= a.duration - 0.25)) endCrossing(true);
+      }
+      function drop(el) { el.removeEventListener('error', viaWebAudio); el.removeEventListener('pause', onPause); release(el); }
       function viaWebAudio(){                                        // fallback: fetch the whole file and decode it (no range requests needed)
         if (stopped || ctx) return;
+        if (a) { var old = a; a = null; drop(old); }                 // the element is out before the copy comes in: one sound at a time
         try { ctx = AC0 ? new AC0() : null; if (ctx && ctx.state === 'suspended') ctx.resume(); } catch (e) { ctx = null; }
         if (!ctx) return;
+        ctx.onstatechange = function(){ if (!stopped && src && ctx.state !== 'running') endCrossing(true); };   // interrupted (iPhone): over, not paused
         fetch(CFG.sound).then(function(r){ return r.arrayBuffer(); })
           .then(function(buf){ return new Promise(function(res, rej){ ctx.decodeAudioData(buf, res, rej); }); })
-          .then(function(decoded){ if (stopped) return; src = ctx.createBufferSource(); src.buffer = decoded; src.loop = true; src.connect(ctx.destination); src.start(0, from() < decoded.duration ? from() : 0); })
+          .then(function(decoded){
+            if (stopped) return;
+            if (ctx.state !== 'running') { try { ctx.close(); } catch (e) {} return; }   // refused now: drop it, never leave it waiting for a later tap
+            src = ctx.createBufferSource(); src.buffer = decoded; src.loop = false; src.connect(ctx.destination); src.start(0, from() < decoded.duration ? from() : 0); })
           .catch(function(){});
       }
-      try {                                                          // plain audio element FIRST, inside the tap; Web Audio only if it refuses
+      try {                                                          // plain audio element FIRST, inside the tap; Web Audio only if it cannot play the file
         if (primed) { a = primed; primed = null; }
-        else { a = new Audio(CFG.sound); a.loop = true; a.preload = 'auto'; }
+        else { a = new Audio(CFG.sound); a.preload = 'auto'; }
+        a.loop = false;
         seekStart(a);
         a.addEventListener('error', viaWebAudio);
+        a.addEventListener('pause', onPause);
         var pr = a.play();
-        if (pr && pr.catch) pr.catch(function(){ a = null; viaWebAudio(); });
+        if (pr && pr.catch) pr.catch(function(err){
+          var el = a; a = null; if (el) drop(el);
+          if (err && err.name === 'NotAllowedError') return;         // no gesture: Web Audio would be refused too and would fire on a later tap instead
+          viaWebAudio();
+        });
       } catch (e) { viaWebAudio(); }
-      audio = { stop: function(){ stopped = true; try { if (a) a.pause(); } catch (e) {} try { if (src) src.stop(); } catch (e) {} try { if (ctx) ctx.close(); } catch (e) {} } };
+      audio = { stop: function(){
+        stopped = true;
+        if (a) { var el = a; a = null; drop(el); }
+        try { if (src) src.stop(); } catch (e) {}
+        try { if (ctx) ctx.close(); } catch (e) {}
+      } };
       return;
     }
     try {                                                           // built in beat, 120 bpm, kick / hat / bass
       var AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
       var ac = new AC(), master = ac.createGain(); master.gain.value = 0.22; master.connect(ac.destination);
-      var beat = 0.5, t0 = ac.currentTime + 0.05, timer, bar = 0;
+      var beat = 0.5, t0 = 0, timer = 0, bar = 0, me;
       var bass = [41.2, 41.2, 49.0, 36.7];                          // E1 E1 G1 D1
       function kick(t){ var o = ac.createOscillator(), g = ac.createGain(); o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
         g.gain.setValueAtTime(1, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.25); o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.3); }
@@ -1409,23 +1439,50 @@ loose($('#ship'), { rock: true });
         note(t, bass[bar % 4], 0.45); note(t + 1.5*beat, bass[bar % 4], 0.2); note(t + 2*beat, bass[bar % 4] * 1.5, 0.45); note(t + 3.5*beat, bass[bar % 4] * 2, 0.2);
         bar++;
       }
-      schedule(); schedule();
-      timer = setInterval(function(){ if (ac.currentTime > t0 + (bar - 1) * 4 * beat) schedule(); }, 200);
-      audio = {
-        whistle: function(){ var t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain(); o.type = 'sine'; o.frequency.setValueAtTime(900, t); o.frequency.exponentialRampToValueAtTime(1500, t + 0.18); o.frequency.exponentialRampToValueAtTime(1100, t + 0.5);
+      function go(){                                                // only once the browser lets it play; a suspended context is never given notes to play later
+        if (audio !== me || ac.state !== 'running' || timer) return;
+        t0 = ac.currentTime + 0.05; schedule(); schedule();
+        timer = setInterval(function(){ if (ac.currentTime > t0 + (bar - 1) * 4 * beat) schedule(); }, 200);
+      }
+      me = audio = {
+        whistle: function(){ if (ac.state !== 'running') return; var t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain(); o.type = 'sine'; o.frequency.setValueAtTime(900, t); o.frequency.exponentialRampToValueAtTime(1500, t + 0.18); o.frequency.exponentialRampToValueAtTime(1100, t + 0.5);
           g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.5, t + 0.05); g.gain.exponentialRampToValueAtTime(0.001, t + 0.55); o.connect(g); g.connect(master); o.start(t); o.stop(t + 0.6); },
-        stop: function(){ clearInterval(timer); master.gain.setTargetAtTime(0, ac.currentTime, 0.15); setTimeout(function(){ try { ac.close(); } catch (e) {} }, 600); }
+        stop: function(){                                           // cut now, no fade: a fade could still be sounding under the next crossing's beat
+          clearInterval(timer); timer = 0;
+          try { master.disconnect(); } catch (e) {}
+          try { ac.close(); } catch (e) {}
+        }
       };
+      ac.onstatechange = function(){ if (audio === me && timer && ac.state !== 'running') endCrossing(true); };   // interrupted (iPhone): over, not paused
+      if (ac.state === 'running') go(); else { var rp = ac.resume(); if (rp && rp.then) rp.then(go, function(){}); }
     } catch (e) { audio = null; }
   }
-  function soundStop(){ if (audio) { try { audio.stop(); } catch (e) {} audio = null; } }
+  function soundStop(hard){
+    var s = audio; audio = null;
+    if (s) { try { s.stop(hard); } catch (e) {} }
+    if (hard && priming) { var el = priming; priming = null; release(el); }   // a muted unlock in flight: drop it too
+  }
 
   // ---------- the crossing ----------
-  var busy = false;
+  var busy = false, runId = 0, backstop = 0;
   function sm(x){ x = Math.max(0, Math.min(1, x)); return x*x*(3-2*x); }
+  // The one way a crossing ends: canvas off, every sound killed, free for the next code. Called when Chad leaves the
+  // screen, when the page is hidden (hard: no fade), and by a wall-clock backstop in case the frames stop coming.
+  function endCrossing(hard) {
+    if (!busy) return;
+    busy = false; runId++;                                           // an old frame loop sees the new id and quits
+    clearTimeout(backstop);
+    stage.classList.remove('ppx-on');
+    try { var g = stage.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, stage.width, stage.height); } catch (e) {}
+    soundStop(hard);
+  }
+  document.addEventListener('visibilitychange', function () { if (document.hidden) endCrossing(true); });   // another app or tab, phone locked
+  window.addEventListener('pagehide', function () { endCrossing(true); });
+  document.addEventListener('freeze', function () { endCrossing(true); });
   function run() {
-    if (busy) return;
+    if (busy || document.hidden) return;
     busy = true;
+    var id = ++runId;
     mount();
     var W = window.innerWidth, dpr = window.devicePixelRatio || 1;
     var figH = typeof CFG.height === 'string' && /vh$/.test(CFG.height) ? window.innerHeight * parseFloat(CFG.height) / 100 : parseFloat(CFG.height);
@@ -1445,8 +1502,11 @@ loose($('#ship'), { rock: true });
     var t1 = tau1 / mult, whistled = false;
     stage.classList.add('ppx-on');
     soundStart();
+    if (runId !== id) return;                                        // the sound layer ended it already
+    backstop = setTimeout(function () { if (runId === id) endCrossing(false); }, (travel / mult + STOPLEN + 1.5) * 1000);   // the crossing's length plus a margin
     var start = null;
     function frame(now) {
+      if (runId !== id) return;                                      // ended early (page hidden): stop drawing
       if (start === null) start = now;
       var t = (now - start) / 1000, tau, rest = 0, raise = 0;
       if (t < t1) { tau = t * mult; }
@@ -1462,12 +1522,7 @@ loose($('#ship'), { rock: true });
       g.fillStyle = 'rgba(0,0,0,.14)'; g.beginPath(); g.ellipse(p.hip.x, floorY + 2, 34, 5, 0, 0, 7); g.fill();   // soft shadow
       drawChad(g, p, 0, floorY, {raise: raise});
       if (p.hip.x > endX) requestAnimationFrame(frame);
-      else {
-        stage.classList.remove('ppx-on');
-        g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, stage.width, stage.height);
-        soundStop();
-        busy = false;
-      }
+      else endCrossing(false);                                       // off the left edge: sound off the same instant
     }
     requestAnimationFrame(frame);
   }
